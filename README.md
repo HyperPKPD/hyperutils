@@ -207,6 +207,6 @@ on.
 
 ## Author and licence
 
-Written and maintained by Obinna Obianom (<idonshayo@gmail.com>),
+Written and maintained by Obinna Obianom,
 <https://github.com/hyperpkpd>. Released under the MIT licence; see the
 `LICENSE` file.

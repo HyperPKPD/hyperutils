@@ -1,0 +1,192 @@
+---
+title: "Reading and preparing data"
+author: "Obinna Obianom"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Reading and preparing data}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>", fig.width = 6.5,
+                      fig.height = 4, dpi = 80)
+library(hyperutils)
+```
+
+Every analysis starts with a data frame. This vignette shows how to read the
+files that clinical pharmacology data usually come in, how to derive and
+recode columns, how to filter rows safely and how to build a clean analysis
+dataset in one documented call.
+
+## The dataset conventions
+
+The functions of the package assume the NONMEM-style layout that most
+pharmacometric work uses: one row per dose or observation, one subject after
+the other, with the columns
+
+| Column | Meaning |
+|--------|---------|
+| `ID` | subject identifier |
+| `TIME` | time of the record, for example hours since the first dose |
+| `DV` | observed value (concentration or response) |
+| `AMT` | dose amount, 0 or missing on observation rows |
+| `EVID` | event type: 0 observation, 1 dose, 4 reset and dose |
+| `MDV` | 1 when `DV` must not be used |
+| `CMT`, `DVID` | compartment and the type of the observation |
+| `ADDL`, `II`, `SS`, `RATE` | additional doses, interdose interval, steady-state flag, infusion rate |
+
+Your column names may differ. Every function that needs one of them has an
+argument to name it, for example `hp_nca(d, id = "SUBJ", time = "HOURS")`.
+
+## Reading a file
+
+`hp_read_data()` reads comma, tab, semicolon or white-space delimited files.
+It finds the delimiter itself, turns `.` into a missing value, drops comment
+rows and upper-cases the column names so that later code can rely on them.
+
+```{r read-example}
+d <- hp_read_data(hp_example_file())
+str(d)
+```
+
+A semicolon file with a title line and lower-case names:
+
+```{r read-odd}
+tmp <- tempfile(fileext = ".csv")
+writeLines(c("Study XYZ-001",
+             "id;time;dv;wt",
+             "1;0;.;70.5",
+             "1;1;4.2;70.5",
+             "1;2;3.1;70.5"), tmp)
+hp_read_data(tmp, skip = 1)
+```
+
+Keep the column names as written with `upper = FALSE`, change the missing
+value codes with `na.strings`, and force the delimiter with `delimiter` if
+the guess is wrong:
+
+```{r read-options}
+hp_read_data(tmp, skip = 1, upper = FALSE)
+unlink(tmp)
+```
+
+### NONMEM table files
+
+A NONMEM `$TABLE` output has a `TABLE NO. 1` line and repeats its header.
+`hp_read_data()` removes those lines, and when the file holds several tables
+it adds a `TABLE_NO` column:
+
+```{r nonmem-table}
+tmp <- tempfile(fileext = ".tab")
+writeLines(c("TABLE NO.     1",
+             " ID TIME DV PRED",
+             " 1 0 0 0",
+             " 1 1 2.5 2.4",
+             "TABLE NO.     2",
+             " ID TIME DV PRED",
+             " 2 0 0 0",
+             " 2 1 3.1 2.9"), tmp)
+hp_read_data(tmp)
+unlink(tmp)
+```
+
+## Deriving columns with `hp_mutate()`
+
+`hp_mutate()` runs statements written as text, in order. A later statement can
+use a column made by an earlier one. Text statements are convenient because
+the same text can be stored in a settings file, a log or a script header.
+
+```{r mutate}
+d2 <- hp_mutate(d, c(
+  "LNDV = log(DV)",
+  "BSA = 0.007184 * WT^0.425 * 170^0.725",
+  "WTGRP = case_when(WT < 70 ~ 'light', WT < 85 ~ 'medium', TRUE ~ 'heavy')",
+  "MALE = ifelse(SEX == 1, 'male', 'female')"
+))
+head(d2[d2$EVID == 0, c("ID", "TIME", "DV", "LNDV", "BSA", "WTGRP", "MALE")], 4)
+```
+
+Two things to know:
+
+* `case_when()` evaluates the pairs in order and uses the first test that is
+  true. End with `TRUE ~ value` to give every other row a value; without it
+  they become `NA`.
+* A statement that fails stops with a message that names it, so a typo does
+  not silently produce a column of missing values.
+
+```{r mutate-error, error = TRUE}
+hp_mutate(d, "BAD = log(NOTACOLUMN)")
+```
+
+## Filtering rows with `hp_filter()`
+
+`hp_filter()` keeps the rows for which a condition is true. It differs from
+`subset()` in one way that matters for clinical data: a row whose test is
+`NA` is dropped, never kept.
+
+```{r filter}
+nrow(d)
+nrow(hp_filter(d, "EVID == 0"))
+nrow(hp_filter(d, "EVID == 0 & WT > 80 & DOSEGRP == 200"))
+```
+
+The same expression text works as the `filter` argument of `hp_nca()`,
+`hp_nca_read()` and `hp_eda_prepare()`, and as the `obs_filter` argument that
+removes observations while keeping all dose records.
+
+## One call for the whole analysis dataset
+
+`hp_custom_prep()` chains the steps in a fixed order: mutate, filter,
+distinct, sort, head, select. Fixing the order makes the call easy to read
+and to review.
+
+```{r prep}
+# one row per subject with a derived exposure group
+subj <- hp_custom_prep(
+  d,
+  filter   = "EVID == 1",
+  mutate   = "DOSEMG = AMT; HIGH = AMT >= 200",
+  distinct = "ID",
+  select   = c("ID", "DOSEMG", "HIGH", "WT", "AGE", "SEX")
+)
+head(subj)
+```
+
+```{r prep-sort}
+# the five highest observed concentrations
+hp_custom_prep(d, filter = "EVID == 0", sort = "-DV", head = 5,
+               select = c("ID", "TIME", "DV"))
+```
+
+A leading minus in `sort` sorts downwards.
+
+## Descriptive statistics
+
+`hp_describe()` returns the statistics of a clinical pharmacology summary in
+one call.
+
+```{r describe}
+round(hp_describe(subj$WT), 2)
+```
+
+Use `sapply()` over a split to get them by group:
+
+```{r describe-groups}
+sapply(split(subj$WT, subj$HIGH), function(v) hp_describe(v)[c("n", "mean", "sd", "geomean")])
+```
+
+## Checking the data before analysis
+
+A short checklist that avoids most problems later:
+
+1. `str(d)`: are the numeric columns numeric? A text column that should be
+   numeric usually contains a stray character.
+2. `table(d$EVID)` and `sum(d$AMT > 0, na.rm = TRUE)`: are there dose records?
+3. `tapply(d$TIME, d$ID, min)`: does every subject start at or after the
+   first dose?
+4. `hp_eda_missing(hp_eda_prepare(d))`: which columns have missing values
+   (see `vignette("exploratory-analysis")`)?
+5. Samples that are 0 or below the limit of quantification: decide on a BLQ
+   rule before you analyse (see `vignette("nca-step-by-step")`).

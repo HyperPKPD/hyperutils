@@ -1,0 +1,35 @@
+Package: hyperutils
+Type: Package
+Title: Fast Exploratory Analysis, Non-Compartmental Analysis and Custom
+    Outputs for Clinical Pharmacology
+Version: 0.1.0
+Authors@R: c(
+    person("Obinna", "Obianom", email = "idonshayo@gmail.com",
+           role = c("aut", "cre", "cph")))
+Description: Tools for the data work of clinical pharmacology and
+    pharmacometrics. Reads NONMEM-style datasets, runs data steps written
+    in R syntax, draws exploratory plots and builds descriptive tables of
+    concentration-time data and covariates, performs non-compartmental
+    analysis (NCA) of every dosing interval with trapezoidal areas, rules
+    for data below the limit of quantification, best-fit selection of the
+    terminal slope, steady-state measures and partial areas, and builds
+    custom 'ggplot2' figures and summary tables (demographics, frequency,
+    pivot and correlation tables) from plain lists of settings. The
+    numerical core is written in C++ with 'Rcpp', so large studies are
+    analysed in seconds.
+License: MIT + file LICENSE
+URL: https://github.com/hyperpkpd/hyperutils
+BugReports: https://github.com/hyperpkpd/hyperutils/issues
+Depends: R (> 3.6)
+Imports: ggplot2 (>= 3.4.0), grDevices, Rcpp (>= 1.0.0), stats, utils
+LinkingTo: Rcpp
+Suggests: knitr, rmarkdown, svglite, testthat (>= 3.0.0)
+VignetteBuilder: knitr
+SystemRequirements: A C++ compiler (for example g++ or clang++; Rtools on
+    Windows)
+NeedsCompilation: yes
+Encoding: UTF-8
+Language: en-US
+Config/testthat/edition: 3
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.2

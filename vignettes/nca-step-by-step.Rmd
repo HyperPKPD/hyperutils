@@ -1,0 +1,373 @@
+---
+title: "Non-compartmental analysis step by step"
+author: "Obinna Obianom"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Non-compartmental analysis step by step}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>", fig.width = 6.5,
+                      fig.height = 4, dpi = 80)
+library(hyperutils)
+```
+
+This vignette runs a non-compartmental analysis (NCA) from the first call to
+the saved report tables. It covers oral, intravenous and steady-state data,
+the rules for samples below the limit of quantification (BLQ), the choice of
+the terminal slope, partial areas and the figures.
+
+## The idea in one paragraph
+
+NCA describes a concentration-time profile without a model: the highest
+concentration (`CMAX`) and when it occurred (`TMAX`), the area under the curve
+(`AUC`) by the trapezoidal rule, the terminal slope `LAMZ` from a regression
+on the last points, the half-life `THALF = ln(2) / LAMZ`, and from these the
+area extrapolated to infinity, the clearance `CL/F` and the volume. The
+package computes these for every dosing interval of every subject.
+
+## Step 1: a first analysis
+
+```{r first}
+d <- hp_read_data(hp_example_file())
+res <- hp_nca(d, route = "oral", lloq = 0.5)
+res
+```
+
+Two arguments matter most:
+
+* `route` says how the drug was given: `"oral"` (any extravascular route),
+  `"iv"`, `"bolus"`, `"infusion"` or `"mixed"`. The default `"auto"` guesses
+  from the shape of the data. State the route whenever you know it.
+* `lloq` is the lower limit of quantification. Samples below it are BLQ and
+  are handled by a rule (step 4).
+
+The result is a list:
+
+| Element | Content |
+|---------|---------|
+| `parameters` | one row per profile, one column per parameter |
+| `summary` | descriptive statistics of each parameter by group, route, dose |
+| `lambda_z` | every terminal regression that was tried |
+| `profiles` | every sample and what was done with it |
+| `results` | the full per-profile results |
+| `notes`, `options` | messages about the data and the settings used |
+
+## Step 2: read the parameters
+
+```{r params}
+cols <- c("ID", "DOSE", "CMAX", "TMAX", "AUCLAST", "LAMZ", "THALF",
+          "AUCINF_OBS", "AUC_PCT_EXTRAP_OBS", "CL_F_OBS", "VZ_F_OBS")
+head(res$parameters[, cols], 6)
+```
+
+`hp_nca_parameters()` is the data dictionary: every parameter with its
+meaning.
+
+```{r dictionary}
+dict <- hp_nca_parameters()
+head(dict[, c("NAME", "LABEL")], 8)
+```
+
+Names follow the usual convention: `_OBS` uses the last observed
+concentration for the extrapolation to infinity, `_PRED` the concentration
+predicted by the terminal regression, `_D` is divided by the dose, `_F`
+marks the apparent clearance and volume of extravascular dosing, and `_SS`
+the steady-state versions.
+
+### Flags
+
+The `FLAGS` column tells you which profiles deserve a look:
+
+```{r flags}
+table(unlist(strsplit(res$parameters$FLAGS[res$parameters$FLAGS != ""], " ")))
+```
+
+| Flag | Meaning |
+|------|---------|
+| `NO_LZ` | no terminal slope could be estimated |
+| `LZ_R2ADJ_LOW` | adjusted R-squared of the terminal fit below the minimum |
+| `LZ_SPAN_SHORT` | the terminal phase covers less than the minimum number of half-lives |
+| `LZ_FEW_POINTS` | fewer than three points in the terminal fit |
+| `AUC_EXTRAP_GT_20` | more than 20 percent of `AUCINF` lies beyond the last sample |
+| `C0_BACKEXTRAP` | the intravenous bolus `C0` was back-extrapolated |
+| `AUC_FROM_FIRST_SAMPLE` | there is no sample at the dose time, the area starts at the first sample |
+
+A profile that cannot be analysed (too few samples, no quantifiable
+concentration) stays in the table with the reason in `SKIPPED`:
+
+```{r skipped}
+sum(res$parameters$SKIPPED != "")
+```
+
+## Step 3: summarise by group
+
+```{r summary}
+res2 <- hp_nca(d, route = "oral", lloq = 0.5, groups = "DOSEGRP")
+s <- res2$summary
+s[s$PARAMETER %in% c("CMAX", "AUCINF_OBS", "THALF"),
+  c("STRATUM", "PARAMETER", "UNIT", "N", "MEAN", "CV_PCT", "GEOMEAN", "MEDIAN")]
+```
+
+Choose other statistics, parameters or strata with `hp_nca_summary()`:
+
+```{r summary-custom}
+hp_nca_summary(res2$parameters, by = "dose",
+               statistics = c("n", "median", "min", "max"),
+               parameters = c("CMAX", "AUCLAST"), options = res2$options)
+```
+
+## Step 4: samples below the limit of quantification
+
+The BLQ rule decides what number a BLQ sample stands for. The choice changes
+the areas, so it belongs in the analysis plan. The package offers six rules:
+
+| `blq_rule` | BLQ samples become |
+|------------|--------------------|
+| `"zero"` | 0 |
+| `"missing"` | left out |
+| `"lloq"` | the limit of quantification |
+| `"half-lloq"` | half of it |
+| `"tmax-zero-missing"` | 0 before Tmax, left out after (default) |
+| `"first-zero-mid-half-last-missing"` | 0 before the first quantifiable sample, half the limit between quantifiable samples, left out after the last |
+
+Compare their effect on the same data:
+
+```{r blq}
+rules <- c("zero", "missing", "half-lloq", "tmax-zero-missing")
+cmp <- do.call(rbind, lapply(rules, function(r) {
+  x <- hp_nca(d, options = hp_nca_options(lloq = 0.5, blq_rule = r), route = "oral")
+  p <- x$parameters
+  data.frame(rule = r, median_AUCLAST = median(p$AUCLAST),
+             median_AUCINF = median(p$AUCINF_OBS, na.rm = TRUE),
+             median_THALF = median(p$THALF, na.rm = TRUE))
+}))
+cmp
+```
+
+The first, second and last rows agree because every BLQ sample of this
+dataset comes after the last quantifiable one, and areas end at the last
+measurable concentration. The `"half-lloq"` rule turns those samples into
+measurable concentrations, which lengthens the area and changes the terminal
+slope. That is why the rule belongs in the analysis plan.
+
+The rules that need a limit (`"lloq"`, `"half-lloq"` and the last one) use the
+`lloq` of the options or, when a BLQ sample carries its limit in `DV`, that
+value. They stop with a message when no limit is known.
+
+Where each sample went is in `res$profiles`:
+
+```{r audit}
+pt <- res$profiles
+head(pt[pt$ID == 1, ], 10)
+table(pt$STATUS)
+```
+
+If the data carry a BLQ flag column, name it with `blq_flag`:
+`hp_nca(d, blq_flag = "BLQ")`.
+
+## Step 5: area methods
+
+Three trapezoidal methods are available:
+
+```{r auc-methods}
+methods <- c("linear", "linear-log", "linear-up-log-down")
+sapply(methods, function(m) {
+  x <- hp_nca(d, options = hp_nca_options(lloq = 0.5, auc_method = m), route = "oral")
+  median(x$parameters$AUCLAST)
+})
+```
+
+`"linear-up-log-down"` (default) uses linear trapezoids while the
+concentration rises and logarithmic ones while it falls, which is exact for
+a mono-exponential decline. `"linear"` overestimates the area of a convex
+decline.
+
+## Step 6: the terminal slope
+
+`LAMZ` comes from a log-linear regression on the last points. By default the
+package fits the last 3, 4, 5, ... points after Tmax and keeps the fit with the
+highest adjusted R-squared (ties within a tolerance go to the fit with more
+points). Every candidate is kept in `res$lambda_z`:
+
+```{r lz}
+lz <- res$lambda_z
+lz[lz$ID == 1, c("CHOSEN", "POINTS", "START", "END", "R2ADJ", "HALF_LIFE")]
+```
+
+Control the search with the options:
+
+```{r lz-options}
+o <- hp_nca_options(lloq = 0.5,
+                    lz_min_points = 4,       # at least four points
+                    lz_min_adj_r2 = 0.8,     # reject poor fits
+                    lz_min_span_ratio = 3)   # flag short terminal phases
+x <- hp_nca(d, options = o, route = "oral")
+table(is.na(x$parameters$LAMZ))
+```
+
+Use `lz_method = "last-n"` with `lz_points = 3` for a fixed number of
+points, `"time-range"` with `lz_from` and `lz_to` for a fixed window, or fix
+the choice for single subjects with `lz_overrides`:
+
+```{r lz-override}
+o <- hp_nca_options(lloq = 0.5, lz_overrides = list(
+  list(id = "1", from = 4, to = 12)))          # subject 1: use 4 to 12 h
+x <- hp_nca(d, options = o, route = "oral")
+x$lambda_z[x$lambda_z$ID == "1" & x$lambda_z$CHOSEN == 1,
+           c("ID", "POINTS", "START", "END", "HOW")]
+```
+
+An override can also give `points`, `exclude` (times to leave out) or
+`skip = TRUE` (no terminal phase for that subject).
+
+## Step 7: partial areas
+
+```{r partial}
+o <- hp_nca_options(lloq = 0.5, partial = list(c(0, 4), c(0, 12)))
+x <- hp_nca(d, options = o, route = "oral")
+head(x$parameters[, c("ID", "AUC_0_4", "AUC_0_12", "AUCLAST")], 4)
+```
+
+A partial area that extends beyond the last sample is extrapolated with the
+terminal slope unless you set `partial_extrapolate = FALSE`.
+
+## Step 8: intravenous data
+
+The package needs no special data for intravenous dosing: the route and the
+compartment of the dose decide. The next lines simulate six subjects who
+received a 100 mg bolus (a one-compartment model with 20 percent variability
+and 10 percent proportional error).
+
+```{r sim-iv}
+set.seed(2026)
+times <- c(0.25, 0.5, 1, 2, 4, 8, 12, 24)
+iv <- do.call(rbind, lapply(1:6, function(i) {
+  v <- 40 * exp(rnorm(1, 0, 0.2)); k <- 0.12 * exp(rnorm(1, 0, 0.2))
+  conc <- 100 / v * exp(-k * times) * exp(rnorm(length(times), 0, 0.1))
+  rbind(data.frame(ID = i, TIME = 0, AMT = 100, DV = NA, EVID = 1, MDV = 1, CMT = 1),
+        data.frame(ID = i, TIME = times, AMT = 0, DV = conc, EVID = 0, MDV = 0, CMT = 1))
+}))
+head(iv, 3)
+```
+
+```{r iv}
+r_iv <- hp_nca(iv, route = "bolus")
+r_iv$notes
+head(r_iv$parameters[, c("ID", "C0", "CMAX", "AUCINF_OBS", "CL_OBS", "VZ_OBS", "VSS_OBS", "THALF")], 3)
+r_iv$parameters$FLAGS[1]
+```
+
+For a bolus the concentration at the dose time (`C0`) is not observed. By
+default it is back-extrapolated from the first two samples and the profile is
+flagged `C0_BACKEXTRAP`; set `c0 = "observed"` to use only observed values.
+Clearance and volumes carry no `_F` because bioavailability is not an issue.
+An infusion is a dose record with a `RATE` above zero (route `"infusion"`).
+
+## Step 9: repeated dosing and steady state
+
+Each dose starts a new dosing interval, and the profiles are analysed one
+after the other. `OCCASION` numbers the doses.
+
+```{r steady}
+set.seed(11)
+tau <- 12
+tt <- c(0, 0.5, 1, 2, 4, 6, 8, 12)
+ssd <- do.call(rbind, lapply(1:5, function(i) {
+  ka <- 1.2; ke <- 0.1 * exp(rnorm(1, 0, 0.15)); v <- 50 * exp(rnorm(1, 0, 0.15))
+  cc <- 100 * ka / (v * (ka - ke)) *
+    (exp(-ke * tt) / (1 - exp(-ke * tau)) - exp(-ka * tt) / (1 - exp(-ka * tau)))
+  rbind(data.frame(ID = i, TIME = 0, AMT = 100, DV = NA, EVID = 1, MDV = 1,
+                   CMT = 1, II = tau, SS = 1),
+        data.frame(ID = i, TIME = tt[-1], AMT = 0, DV = cc[-1] * exp(rnorm(7, 0, 0.1)),
+                   EVID = 0, MDV = 0, CMT = 2, II = 0, SS = 0))
+}))
+r_ss <- hp_nca(ssd, route = "oral")
+r_ss$parameters[1:3, c("ID", "STEADY_STATE", "TAU", "CMAX", "CMIN", "AUCTAU",
+                       "CAVG", "FLUCT_PCT", "CL_F_SS")]
+```
+
+A dose record with `SS = 1` and `II` (the dosing interval) marks steady
+state. The analysis then reports the measures over the dosing interval:
+`AUCTAU`, `CAVG`, `CMIN`, `CTAU`, `FLUCT_PCT`, `SWING`, `PTR`, the
+steady-state clearance `CL_F_SS` and the predicted accumulation `RACC_PRED`.
+Infinity-based parameters are not computed for a steady-state interval.
+
+Use `steady_state = "last"` to treat the last interval of each subject as
+steady state without flags in the data, and `tau` to give the dosing
+interval when it is not in the data.
+
+Datasets with additional doses (`ADDL` and `II` on the dose record) are
+expanded into the individual doses, so a multiple-dose study needs no
+reshaping. The next lines simulate one subject given 100 mg daily for three
+days and analyse every dosing interval:
+
+```{r multi}
+conc_at <- function(t, doses = c(0, 24, 48), ka = 1.2, ke = 0.1, v = 50) {
+  sum(vapply(doses, function(d) {
+    if (t < d) 0 else 100 * ka / (v * (ka - ke)) * (exp(-ke * (t - d)) - exp(-ka * (t - d)))
+  }, 1))
+}
+tm <- c(0.5, 1, 2, 4, 8, 12, 24, 24.5, 25, 26, 28, 32, 36, 48, 48.5, 49, 50, 52, 56, 60, 72)
+md <- rbind(
+  data.frame(ID = 1, TIME = 0, AMT = 100, DV = NA, EVID = 1, MDV = 1, CMT = 1, ADDL = 2, II = 24),
+  data.frame(ID = 1, TIME = tm, AMT = 0, DV = vapply(tm, conc_at, 1), EVID = 0, MDV = 0,
+             CMT = 2, ADDL = 0, II = 0))
+r_md <- hp_nca(md, route = "oral")
+r_md$parameters[, c("ID", "OCCASION", "STEADY_STATE", "TAU", "CMAX", "AUCLAST", "AUCINF_OBS")]
+```
+
+The area to infinity of a later dose includes the tail of the earlier doses,
+so such profiles carry the flag `INF_AFTER_EARLIER_DOSES`.
+
+## Step 10: figures
+
+`hp_nca_plots()` draws the individual and mean profiles, box plots of chosen
+parameters, and pages of individual profiles that show the points used for
+the terminal slope.
+
+```{r plots}
+fig <- hp_nca_plots(res2, hp_nca_figure_options(
+  boxplots = "CMAX", error_bars = "sd", individual_nrow = 2, individual_ncol = 3,
+  units = list(time = "h", conc = "ng/mL", dose = "mg")))
+names(fig)
+fig$mean_profile_semilog
+```
+
+```{r plots-individual}
+fig$individual_01
+```
+
+Open circles mark the observations that entered the terminal regression and
+the line is the fitted slope.
+
+## Step 11: save the results
+
+```{r save}
+out <- file.path(tempdir(), "nca")
+files <- c(
+  hp_save_table(res2$parameters, "nca_parameters.csv", out),
+  hp_save_table(res2$summary, "nca_summary.csv", out, digits = 4),
+  hp_save_table(res2$lambda_z, "nca_lambda_z.csv", out),
+  hp_save_table(res2$profiles, "nca_profiles.csv", out),
+  hp_save_plot(fig$mean_profile_semilog, "mean_profile", out, 6.5, 4, dpi = 72)
+)
+basename(files)
+unlink(out, recursive = TRUE)
+```
+
+The four tables are the audit trail of the analysis: the parameters, the
+summary, the choice of the terminal slope for each profile, and what was
+done with every sample.
+
+## A checklist for a reportable analysis
+
+1. State the route, the limit of quantification and the BLQ rule.
+2. State the area method and the rule for the terminal slope.
+3. Review the `FLAGS` and `SKIPPED` columns, and the individual pages.
+4. Keep `lambda_z` and `profiles` with the results.
+5. Keep the call (or the `options` object) with the analysis so that it can
+   be repeated.

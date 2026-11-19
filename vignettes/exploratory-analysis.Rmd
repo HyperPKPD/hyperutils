@@ -1,0 +1,202 @@
+---
+title: "Exploratory data analysis step by step"
+author: "Obinna Obianom"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Exploratory data analysis step by step}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>", fig.width = 6.5,
+                      fig.height = 4, dpi = 80)
+library(hyperutils)
+```
+
+Before a model is built or a non-compartmental analysis is run, the data
+should be looked at. This vignette takes the example dataset through the
+exploratory workflow of the package: prepare the data, describe it, draw the
+standard figures, and write each of them to disk.
+
+## Step 1: prepare the dataset
+
+`hp_eda_prepare()` is the only step that touches the raw data. It returns an
+object with two frames.
+
+```{r prepare}
+d <- hp_read_data(hp_example_file())
+e <- hp_eda_prepare(d, dvid = "DVID", lloq = 0.5, color = "DOSEGRP")
+e
+```
+
+The **record frame** (`e$rec`) has one row per record and adds the derived
+columns that the plots need: time after the latest dose (`TAD`), time after
+the first dose (`TAFD`), the latest dose (`DOSE`), the dose-normalised
+observation (`DVNORM`), the BLQ flag (`BLQ`), the record type (`EVENT`) and
+whether an observation is a concentration (`PKOBS`).
+
+The **subject frame** (`e$subj`) has one row per individual with the baseline
+covariates, the counts of records and the observed exposure (`CMAX`, `TMAX`,
+`AUCLAST` and others).
+
+```{r frames}
+names(e$rec)
+head(e$subj[, c("ID", "DOSE1", "NOBS", "NBLQ", "CMAX", "TMAX", "AUCLAST", "WT")])
+```
+
+The covariates are found from the data. Override them with the `continuous`,
+`categorical` and `time_varying` arguments when the guess is wrong.
+
+```{r covariates}
+e$info$continuous
+e$info$categorical
+```
+
+## Step 2: describe the dataset with tables
+
+A table is described by a specification built with `hp_eda_tspec()` and
+computed with `hp_eda_table()`. Three kinds exist: `summary` (descriptive
+statistics), `count` (counts and percentages) and `listing` (rows).
+
+```{r data-summary}
+hp_eda_data_summary(e)
+```
+
+```{r cov-table}
+hp_eda_table(e, hp_eda_tspec(
+  kind = "summary", scope = "subjects", vars = c("WT", "AGE"),
+  by = "DOSEGRP", overall = TRUE,
+  stats = c("n", "mean", "sd", "median", "min", "max")))
+```
+
+```{r count-table}
+hp_eda_table(e, hp_eda_tspec(kind = "count", scope = "subjects",
+                             vars = "SEX", by = "DOSEGRP", overall = TRUE))
+```
+
+Missing values and correlations between covariates are checked the same way:
+
+```{r missing}
+head(hp_eda_missing(e), 5)
+hp_eda_correlation(e)
+```
+
+A listing of rows can answer a specific question. This one lists the
+observations below the limit of quantification:
+
+```{r listing}
+hp_eda_table(e, hp_eda_tspec(
+  kind = "listing", scope = "obs", vars = c("ID", "TIME", "DV", "BLQ"),
+  filter = "BLQ == 1", max_rows = 8))
+```
+
+## Step 3: draw figures
+
+A figure is described by a specification built with `hp_eda_spec()` and
+drawn with `hp_eda_plot()`. The function returns a list of ggplot objects, one
+per page.
+
+### Individual concentration-time profiles
+
+```{r spaghetti}
+units <- list(time = "h", conc = "ng/mL", dose = "mg")
+spaghetti <- hp_eda_spec(name = "spaghetti", title = "Individual profiles",
+                         kind = "line", x = "TAFD", y = "DV", color = "DOSEGRP",
+                         pk_only = TRUE, log_y = TRUE)
+hp_eda_plot(e, spaghetti, units)[[1]]
+```
+
+### Typical profile with a spread
+
+A `summary` plot bins the x variable and draws a centre and an error bar for
+each bin by colour group.
+
+```{r summary-plot}
+typical <- hp_eda_spec(name = "typical", title = "Median and quartiles",
+                       kind = "summary", x = "TAFD", y = "DV", color = "DOSEGRP",
+                       centre = "median", spread = "iqr", pk_only = TRUE,
+                       log_y = TRUE)
+hp_eda_plot(e, typical, units)[[1]]
+```
+
+### Dose proportionality by eye
+
+Dose-normalised concentrations from different dose groups should overlap when
+the exposure is dose proportional.
+
+```{r dose-norm}
+dn <- hp_eda_spec(name = "dosenorm", title = "Dose-normalised concentration",
+                  kind = "summary", x = "TAFD", y = "DVNORM", color = "DOSEGRP",
+                  centre = "geomean", spread = "sd", pk_only = TRUE, log_y = TRUE)
+hp_eda_plot(e, dn, units)[[1]]
+```
+
+### Covariate against exposure
+
+With `scope = "subjects"` the plot uses the subject frame, which holds the
+observed exposure.
+
+```{r cov-exposure}
+cov_plot <- hp_eda_spec(name = "wt_cmax", title = "Cmax against body weight",
+                        kind = "scatter", scope = "subjects", x = "WT", y = "CMAX",
+                        color = "DOSEGRP", smooth = "linear")
+hp_eda_plot(e, cov_plot, units)[[1]]
+```
+
+### Distributions
+
+```{r hist}
+hist_plot <- hp_eda_spec(name = "wt_hist", title = "Body weight",
+                         kind = "histogram", scope = "subjects", x = "WT",
+                         hist_bins = 8)
+hp_eda_plot(e, hist_plot, units)[[1]]
+```
+
+Several variables in `x` draw one panel per variable:
+
+```{r box}
+box_plot <- hp_eda_spec(name = "box", title = "Exposure by dose group",
+                        kind = "box", scope = "subjects", x = "DOSEGRP",
+                        y = c("CMAX", "AUCLAST"), free = "y")
+hp_eda_plot(e, box_plot, units)[[1]]
+```
+
+### One panel per individual
+
+Facet by `ID` and the figure is split into pages of `ncol * nrow` panels:
+
+```{r pages}
+panels <- hp_eda_spec(name = "individual", title = "Individuals", kind = "line",
+                      x = "TAFD", y = "DV", facet = "ID", pk_only = TRUE,
+                      log_y = TRUE, ncol = 4, nrow = 3)
+pages <- hp_eda_plot(e, panels, units)
+length(pages)
+pages[[1]]
+```
+
+## Step 4: save everything
+
+`hp_save_plots()` writes every page (numbered when there are several) and
+`hp_save_table()` writes a table as a CSV file. Both need a folder.
+
+```{r save}
+out <- file.path(tempdir(), "eda")
+f1 <- hp_save_plots(pages, "individual", out, width = 9, height = 7, dpi = 72)
+f2 <- hp_save_table(hp_eda_data_summary(e), "data_summary.csv", out)
+basename(c(f1, f2))
+unlink(out, recursive = TRUE)
+```
+
+## Choosing the right plot
+
+| Question | Plot |
+|----------|------|
+| Are the profiles plausible, any outliers? | `line`, log y axis |
+| What is the typical profile and its spread? | `summary` |
+| Is exposure dose proportional? | `summary` of `DVNORM` by dose group |
+| Does a covariate relate to exposure? | `scatter`, `scope = "subjects"`, `smooth` |
+| How are covariates distributed? | `histogram`, `box`, `bar` |
+| Are covariates correlated? | `corr` or `pairs` |
+| How does the effect follow concentration? | `pkpd` (needs a `DVID` for each) |

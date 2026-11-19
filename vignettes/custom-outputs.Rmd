@@ -1,0 +1,256 @@
+---
+title: "Custom plots and tables for clinical pharmacology reports"
+author: "Obinna Obianom"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Custom plots and tables for clinical pharmacology reports}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>", fig.width = 6.5,
+                      fig.height = 4, dpi = 80)
+library(hyperutils)
+```
+
+The standard plots and tables of `hp_eda_plot()` and `hp_nca_plots()` cover
+the usual needs. When a report asks for something else, `hp_custom_plot()` and
+`hp_custom_table()` build it from a plain list of settings, for any data
+frame. Because the description is a list, it can be printed, stored, reviewed
+and reused, and the same list produces the same figure every time.
+
+```{r data}
+d <- hp_read_data(hp_example_file())
+obs  <- hp_custom_prep(d, filter = "EVID == 0 & !is.na(DV)")
+subj <- hp_custom_prep(d, filter = "EVID == 1", distinct = "ID")
+```
+
+## Plots
+
+A plot is a list. The essentials are `geoms` (what to draw) and the mapping
+of columns to `x`, `y`, `color`, `fill`, `shape`, `size`, `linetype`, `group`
+and `label`. A mapping can be a column name or an R expression of the
+columns, such as `"factor(DOSEGRP)"` or `"log10(DV)"`.
+
+### Points, lines and a log axis
+
+```{r spaghetti}
+hp_custom_plot(obs, list(
+  geoms = c("line", "point"), x = "TIME", y = "DV", group = "ID",
+  color = "factor(DOSEGRP)", y_log = TRUE,
+  x_title = "Time (h)", y_title = "Concentration (ng/mL)",
+  legend_title = "Dose (mg)", title = "Individual profiles",
+  hline = 0.5))
+```
+
+`hline` draws a reference line (here the limit of quantification); `vline`
+and `abline` (a list of `c(intercept, slope)`) work the same way.
+
+### Mean and spread at each time
+
+The `errorbar` and `pointrange` geoms summarise `y` at each value of `x`.
+`summary_error` chooses `"sd"` (default), `"sem"` or `"ci95"`.
+
+```{r errorbar}
+hp_custom_plot(obs, list(
+  geoms = c("errorbar", "pointrange"), x = "TIME", y = "DV",
+  color = "factor(DOSEGRP)", summary_error = "sd", y_log = TRUE,
+  x_title = "Time (h)", y_title = "Mean concentration (ng/mL)",
+  legend_title = "Dose (mg)"))
+```
+
+### Distributions
+
+```{r box}
+hp_custom_plot(subj, list(
+  geoms = c("boxplot", "jitter"), x = "factor(DOSEGRP)", y = "WT",
+  fill = "factor(DOSEGRP)", legend = "none", jitter = 0.15,
+  x_title = "Dose group (mg)", y_title = "Body weight (kg)"))
+```
+
+```{r hist}
+hp_custom_plot(subj, list(
+  geoms = "histogram", x = "WT", fill = "factor(SEX)", nbins = 8,
+  facet_wrap = "SEX", labels_both = TRUE, legend = "none",
+  theme = "minimal", x_title = "Body weight (kg)"))
+```
+
+Other distribution geoms are `violin`, `density`, `ecdf` and `qq`.
+
+```{r violin}
+hp_custom_plot(subj, list(geoms = c("violin", "boxplot"), x = "factor(SEX)",
+                          y = "AGE", fill = "factor(SEX)", bar_width = 0.15,
+                          legend = "none", x_title = "Sex (0 = F, 1 = M)",
+                          y_title = "Age (years)"))
+```
+
+### Relationships with a smoother
+
+```{r smooth}
+peak <- aggregate(DV ~ ID + WT + DOSEGRP, data = obs, FUN = max)
+hp_custom_plot(peak, list(
+  geoms = c("point", "smooth"), x = "WT", y = "DV", color = "factor(DOSEGRP)",
+  smooth_se = TRUE, x_title = "Body weight (kg)", y_title = "Cmax (ng/mL)",
+  legend_title = "Dose (mg)"))
+```
+
+`smooth` draws a straight line; set `smooth_loess = TRUE` for a loess curve
+(with `span`). `smooth_se` adds the confidence band and `smooth_level` sets
+its level.
+
+### Bars and heat maps
+
+`bar` counts rows, or summarises `y` with `summary_fun` when `y` is given.
+
+```{r bar}
+hp_custom_plot(subj, list(
+  geoms = "bar", x = "factor(DOSEGRP)", y = "WT", summary_fun = "median",
+  fill = "factor(SEX)", position = "dodge", legend_title = "Sex",
+  x_title = "Dose group (mg)", y_title = "Median body weight (kg)"))
+```
+
+```{r tile}
+cells <- aggregate(DV ~ TIME + DOSEGRP, data = obs, FUN = mean)
+hp_custom_plot(cells, list(geoms = "tile", x = "factor(TIME)",
+                           y = "factor(DOSEGRP)", fill = "log10(DV)",
+                           x_title = "Time (h)", y_title = "Dose (mg)",
+                           fill_title = "log10 mean DV", palette = "viridis"))
+```
+
+### One panel per group
+
+`facet_wrap` splits by one or several columns, `facet_rows` and
+`facet_cols` make a grid. `scales` frees the axes.
+
+```{r facets}
+hp_custom_plot(obs[obs$ID %in% 1:6, ], list(
+  geoms = c("line", "point"), x = "TIME", y = "DV", facet_wrap = "ID",
+  facet_ncol = 3, labels_both = TRUE, y_log = TRUE, scales = "free_y",
+  legend = "none", x_title = "Time (h)", y_title = "Concentration (ng/mL)"))
+```
+
+### Look and feel
+
+```{r look}
+base <- list(geoms = c("line", "point"), x = "TIME", y = "DV", group = "ID",
+             color = "factor(DOSEGRP)", y_log = TRUE)
+hp_custom_plot(obs, c(base, list(
+  theme = "bw", palette = "dark2", legend = "top", alpha = 0.6,
+  title = "A bigger title", title_size = 14, subtitle = "with a subtitle",
+  caption = "Source: example data", legend_title = "Dose (mg)")))
+```
+
+Themes are `"classic"` (default), `"minimal"`, `"bw"`, `"light"`, `"grey"` and
+`"void"`. Palettes are `"okabe-ito"` (default, colour-blind safe),
+`"tableau"`, `"set1"`, `"dark2"`, `"pastel"`, `"grey"` and `"viridis"`.
+
+### The result is a ggplot
+
+Because the return value is a ggplot object, anything ggplot2 offers can be
+added afterwards, and the package theme can be added to any ggplot:
+
+```{r extend}
+p <- hp_custom_plot(obs, c(base, list(legend_title = "Dose (mg)")))
+p + ggplot2::annotate("text", x = 12, y = 9, label = "Peak at 2 to 4 h", size = 3) +
+  ggplot2::coord_cartesian(xlim = c(0, 48))
+```
+
+## Tables
+
+A table is also a list, with a `kind`. The result is a data frame of text.
+
+### Listing
+
+```{r listing}
+hp_custom_table(head(subj[, c("ID", "AMT", "WT", "AGE", "SEX")], 5),
+                list(kind = "listing"))
+```
+
+### Summary statistics
+
+```{r summary}
+hp_custom_table(subj, list(
+  kind = "summary", vars = c("WT", "AGE"), by = "SEX", total = TRUE,
+  stats = c("n", "mean", "sd", "median", "min", "max")))
+```
+
+Available statistics are `n`, `nmiss`, `mean`, `sd`, `cv`, `sem`, `median`,
+`min`, `max`, `q1`, `q3`, `p5`, `p95`, `geomean`, `gcv`, `mean_sd` and
+`median_range`.
+
+### Demographics
+
+The baseline table of a clinical study report, with a column per group.
+Variables with few values (here `SEX`) are categorical.
+
+```{r demographics}
+hp_custom_table(subj, list(
+  kind = "demographics", vars = c("WT", "AGE", "SEX"), by = "DOSEGRP",
+  total = TRUE, stats = c("mean_sd", "median_range")))
+```
+
+Use `continuous` and `categorical` to override the guess, `percent_digits`
+for the percentages and `max_levels` for the number of distinct values up to
+which a numeric column counts as categorical.
+
+### Frequencies and cross-tabulations
+
+```{r frequency}
+hp_custom_table(subj, list(kind = "frequency", rows = "SEX", columns = "DOSEGRP",
+                           percent = "column"))
+```
+
+`percent` is `"none"`, `"row"`, `"column"` or `"total"`.
+
+### Pivot tables
+
+A statistic of a value column, by rows and columns.
+
+```{r pivot}
+hp_custom_table(subj, list(kind = "pivot", rows = "SEX", columns = "DOSEGRP",
+                           value = "WT", fun = "mean", total = TRUE))
+```
+
+### Correlations
+
+```{r correlation}
+hp_custom_table(subj, list(kind = "correlation", vars = c("WT", "AGE", "AMT")))
+```
+
+### Finishing touches
+
+Any table can be renamed, trimmed and reshaped:
+
+```{r finishing}
+hp_custom_table(subj, list(
+  kind = "summary", vars = c("WT", "AGE"), by = "SEX",
+  stats = c("n", "mean", "sd"),
+  rename = list(c("N", "Subjects"), c("SEX", "Sex (0 = F, 1 = M)")),
+  decimals = 1))
+```
+
+`hide` drops columns, `na_text` replaces empty cells, and `transpose = TRUE`
+swaps rows and columns.
+
+## Putting a report page together
+
+```{r page}
+out <- file.path(tempdir(), "custom")
+tab <- hp_custom_table(subj, list(kind = "demographics", vars = c("WT", "AGE", "SEX"),
+                                  by = "DOSEGRP", total = TRUE))
+fig <- hp_custom_plot(obs, c(base, list(legend_title = "Dose (mg)",
+                                        x_title = "Time (h)",
+                                        y_title = "Concentration (ng/mL)")))
+files <- c(hp_save_table(tab, "demographics.csv", out),
+           hp_save_plot(fig, "profiles", out, width = 6.5, height = 4, dpi = 72))
+basename(files)
+unlink(out, recursive = TRUE)
+```
+
+## Reference
+
+The full list of plot and table settings is on the help pages
+`?hp_custom_plot` and `?hp_custom_table`. For standard figures and tables of
+a dataset see `vignette("exploratory-analysis")`.

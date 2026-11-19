@@ -1,0 +1,8 @@
+bibentry(
+  "Manual",
+  title = "hyperutils: Fast Exploratory Analysis, Non-Compartmental Analysis and Custom Outputs for Clinical Pharmacology",
+  author = person("Obinna", "Obianom"),
+  year = "2026",
+  note = "R package version 0.1.0",
+  url = "https://github.com/hyperpkpd/hyperutils"
+)

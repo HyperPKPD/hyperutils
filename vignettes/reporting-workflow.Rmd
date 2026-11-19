@@ -1,0 +1,228 @@
+---
+title: "A reproducible analysis and reporting workflow"
+author: "Obinna Obianom"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{A reproducible analysis and reporting workflow}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>", fig.width = 6.5,
+                      fig.height = 4, dpi = 80)
+library(hyperutils)
+```
+
+This vignette puts the pieces together into one script that reads a dataset,
+checks it, runs the analysis, writes every table and figure to a folder, and
+records what was done. It then shows how to verify the numbers against a
+known answer and how the package behaves on a larger study.
+
+## The shape of a reproducible script
+
+A script that a colleague, a reviewer or you in a year can run again has five
+parts: a header, the settings, the data, the analysis and the output. Put
+every decision in the settings block, so that it is visible in one place.
+
+```r
+# ----------------------------------------------------------------------
+# File:     pk_analysis.R
+# Purpose:  Non-compartmental analysis and exploratory figures, study XYZ
+# Author:   A. Analyst
+# Version:  1.0
+# ----------------------------------------------------------------------
+library(hyperutils)
+
+# --- settings ---------------------------------------------------------
+data_file <- "data/xyz001.csv"
+out_dir   <- "output"
+lloq      <- 0.5
+units     <- list(time = "h", conc = "ng/mL", dose = "mg")
+opt       <- hp_nca_options(lloq = lloq, blq_rule = "tmax-zero-missing",
+                            auc_method = "linear-up-log-down",
+                            dose_unit = "mg", conc_unit = "ng/mL")
+
+# --- data -------------------------------------------------------------
+d <- hp_read_data(data_file)
+
+# --- analysis ---------------------------------------------------------
+res <- hp_nca(d, options = opt, route = "oral", groups = "DOSEGRP")
+
+# --- output -----------------------------------------------------------
+hp_save_table(res$parameters, "nca_parameters.csv", out_dir)
+```
+
+The rest of this vignette fills in that outline and runs it on the example
+data, writing to a temporary folder.
+
+## The settings block
+
+```{r settings}
+out_dir <- file.path(tempdir(), "workflow")
+lloq    <- 0.5
+units   <- list(time = "h", conc = "ng/mL", dose = "mg")
+opt     <- hp_nca_options(lloq = lloq,
+                          blq_rule = "tmax-zero-missing",
+                          auc_method = "linear-up-log-down",
+                          dose_unit = "mg", time_unit = "h", conc_unit = "ng/mL")
+d <- hp_read_data(hp_example_file())
+```
+
+## Step 1: check the data
+
+Describe the dataset and look for problems before any analysis. The tables
+below go into the data section of a report.
+
+```{r qc}
+e <- hp_eda_prepare(d, dvid = "DVID", lloq = lloq, color = "DOSEGRP")
+data_summary <- hp_eda_data_summary(e)
+missing_vals <- hp_eda_missing(e)
+covariates   <- hp_eda_table(e, hp_eda_tspec(
+  kind = "summary", scope = "subjects", vars = c("WT", "AGE"),
+  by = "DOSEGRP", overall = TRUE))
+data_summary[1:6, ]
+```
+
+Stop early when the data are not what you expect. A few lines of plain R make
+the script fail loudly instead of producing a wrong analysis:
+
+```{r checks}
+stopifnot(
+  "no dose records"        = any(d$AMT > 0, na.rm = TRUE),
+  "duplicate subjects"     = !anyDuplicated(d[d$EVID == 1, "ID"]),
+  "negative concentrations" = all(d$DV >= 0, na.rm = TRUE)
+)
+```
+
+## Step 2: figures of the data
+
+```{r figures}
+profiles <- hp_eda_plot(e, hp_eda_spec(
+  name = "profiles", title = "Concentration over time", kind = "line",
+  x = "TAFD", y = "DV", color = "DOSEGRP", pk_only = TRUE, log_y = TRUE), units)
+profiles[[1]]
+```
+
+## Step 3: the analysis
+
+```{r nca}
+res <- hp_nca(d, options = opt, route = "oral", groups = "DOSEGRP")
+res
+```
+
+The options object records every setting of the analysis. Printing it, or
+saving it, documents the analysis:
+
+```{r options}
+str(res$options[c("auc_method", "blq_rule", "lloq", "steady_state")])
+str(res$options$lz[c("method", "min_points", "min_adj_r2")])
+```
+
+## Step 4: write everything
+
+```{r write}
+dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+files <- c(
+  hp_save_table(data_summary,    "data_summary.csv",   out_dir),
+  hp_save_table(missing_vals,    "data_missing.csv",   out_dir),
+  hp_save_table(covariates,      "covariates.csv",     out_dir),
+  hp_save_table(res$parameters,  "nca_parameters.csv", out_dir),
+  hp_save_table(res$summary,     "nca_summary.csv",    out_dir, digits = 4),
+  hp_save_table(res$lambda_z,    "nca_lambda_z.csv",   out_dir),
+  hp_save_table(res$profiles,    "nca_profiles.csv",   out_dir),
+  hp_save_plots(profiles,        "profiles",           out_dir, 7, 5, dpi = 72)
+)
+figs <- hp_nca_plots(res, hp_nca_figure_options(units = units))
+files <- c(files, unlist(lapply(names(figs), function(nm)
+  hp_save_plot(figs[[nm]], paste0("nca_", nm), out_dir, 7, 5, dpi = 72))))
+length(files)
+head(basename(files), 8)
+```
+
+## Step 5: record the session
+
+The last lines of a script should record what produced the files: the package
+version, the date and the R session.
+
+```{r record}
+cat("hyperutils", as.character(hp_version()), "\n")
+cat("R", R.version.string, "\n")
+cat("Date", format(Sys.Date()), "\n")
+```
+
+```{r cleanup}
+unlink(out_dir, recursive = TRUE)
+```
+
+Run the whole script from a shell with `Rscript pk_analysis.R`; a numbered
+folder per run (for example `output/2026-01-31`) keeps the history.
+
+## Verifying the numbers
+
+Before trusting any NCA software on a regulatory analysis, check it on data
+whose answer is known. For an intravenous bolus into a one-compartment model,
+`C(t) = (D / V) exp(-k t)`, so without noise the area to infinity is exactly
+`D / (V k)`, the clearance is `V k`, the half-life is `log(2) / k` and the
+volume of distribution is `V`.
+
+```{r verify}
+D <- 100; V <- 40; k <- 0.15
+tt <- c(0.25, 0.5, 1, 2, 4, 6, 8, 12, 24)
+known <- rbind(
+  data.frame(ID = 1, TIME = 0, AMT = D, DV = NA, EVID = 1, MDV = 1, CMT = 1),
+  data.frame(ID = 1, TIME = tt, AMT = 0, DV = D / V * exp(-k * tt),
+             EVID = 0, MDV = 0, CMT = 1))
+chk <- hp_nca(known, route = "bolus")$parameters
+data.frame(
+  parameter = c("AUCINF_OBS", "CL_OBS", "VZ_OBS", "THALF"),
+  estimated = unlist(chk[1, c("AUCINF_OBS", "CL_OBS", "VZ_OBS", "THALF")]),
+  exact     = c(D / (V * k), V * k, V, log(2) / k),
+  row.names = NULL)
+```
+
+The estimates agree with the exact values to rounding error. The default
+linear-up/log-down rule is exact for a mono-exponential decline; the linear
+rule is not:
+
+```{r verify-linear}
+lin <- hp_nca(known, options = hp_nca_options(auc_method = "linear"),
+              route = "bolus")$parameters
+c(exact = D / (V * k), log_down = chk$AUCLAST + chk$CLAST / chk$LAMZ,
+  linear = lin$AUCLAST + lin$CLAST / lin$LAMZ)
+```
+
+The package's own test suite repeats checks of this kind for every method
+and rule, and compares the C++ kernels with plain R implementations.
+
+## Larger studies
+
+The areas and the terminal-phase regressions run in compiled code, and the
+bookkeeping around them is vectorised. To see the scaling, repeat the example
+study with new subject numbers.
+
+```{r scale}
+bigger <- function(k) {
+  do.call(rbind, lapply(seq_len(k), function(i) { x <- d; x$ID <- x$ID + 24 * (i - 1); x }))
+}
+big <- bigger(10)                      # 240 subjects
+length(unique(big$ID))
+rb <- hp_nca(big, route = "oral", lloq = lloq)
+nrow(rb$parameters)
+```
+
+On a current laptop this analysis of several hundred profiles takes about a
+second, and the time grows in proportion to the number of profiles. The
+tables of a thousand-subject study still print and save in moments, which makes
+it practical to re-run the whole analysis whenever the data change.
+
+A few habits keep large analyses quick:
+
+* Read the data once with `hp_read_data()` and pass the data frame around.
+* Use `hp_nca_summary()` on the parameter table when you only want other
+  statistics or strata; there is no need to repeat the analysis.
+* Draw the individual-profile pages only when needed
+  (`hp_nca_figure_options(individual = FALSE)`).
+* Save figures at the resolution you need: `dpi = 72` for drafts and 300 for
+  reports.
